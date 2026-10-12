@@ -1,0 +1,265 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Buabeng Authentic Hotel - Serverless Booking Platform 
+
+Parameters:
+  ProjectName:
+    Type: String
+    Default: buabeng-hotel
+
+Resources:
+  ClientsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub ${ProjectName}-clients
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: phone
+          AttributeType: S
+      KeySchema:
+        - AttributeName: phone
+          KeyType: HASH
+
+  LambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: DynamoDBAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: 
+                  - dynamodb:PutItem
+                  - dynamodb:Scan
+                  - dynamodb:GetItem
+                Resource: !GetAtt ClientsTable.Arn
+
+  SaveLambda:
+    Type: AWS::Lambda::Function
+    Properties:
+      Runtime: python3.11
+      Handler: index.lambda_handler
+      Timeout: 10
+      Role: !GetAtt LambdaRole.Arn
+      Code:
+        ZipFile: |
+          import json, boto3, os
+          from datetime import datetime
+          dynamodb = boto3.resource('dynamodb')
+          table = dynamodb.Table(os.environ['TABLE_NAME'])
+          def lambda_handler(event, context):
+              try:
+                  body = json.loads(event.get('body', '{}'))
+                  if not body.get('phone') or not body.get('name'):
+                      return {'statusCode':400,'headers':{'Access-Control-Allow-Origin':'*'},'body':json.dumps({"error":"Name and phone required"})}
+                  item = {
+                    'phone': body['phone'].strip(),
+                    'name': body['name'].strip(),
+                    'roomType': body.get('roomType','Standard'),
+                    'source': body.get('source','Website'),
+                    'createdAt': datetime.utcnow().isoformat()
+                  }
+                  table.put_item(Item=item)
+                  return {'statusCode':200,'headers':{'Access-Control-Allow-Origin':'*'},'body':json.dumps({"message":"Saved"})}
+              except Exception as e:
+                  print(e)
+                  return {'statusCode':500,'headers':{'Access-Control-Allow-Origin':'*'},'body':json.dumps({"error":"Internal error"})}
+      Environment:
+        Variables:
+          TABLE_NAME: !Ref ClientsTable
+
+  ReadLambda:
+    Type: AWS::Lambda::Function
+    Properties:
+      Runtime: python3.11
+      Handler: index.lambda_handler
+      Timeout: 10
+      Role: !GetAtt LambdaRole.Arn
+      Code:
+        ZipFile: |
+          import json, boto3, os
+          dynamodb = boto3.resource('dynamodb')
+          def lambda_handler(event, context):
+              try:
+                  table = dynamodb.Table(os.environ['TABLE_NAME'])
+                  items = table.scan().get('Items', [])
+                  items.sort(key=lambda x: x.get('createdAt',''), reverse=True)
+                  return {'statusCode':200,'headers':{'Access-Control-Allow-Origin':'*'},'body':json.dumps(items)}
+              except Exception as e:
+                  print(e)
+                  return {'statusCode':500,'headers':{'Access-Control-Allow-Origin':'*'},'body':json.dumps({"error":"Failed to fetch"})}
+      Environment:
+        Variables:
+          TABLE_NAME: !Ref ClientsTable
+
+  HotelApi:
+    Type: AWS::ApiGateway::RestApi
+    Properties:
+      Name: !Sub ${ProjectName}-api
+
+  ClientsResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      ParentId: !GetAtt HotelApi.RootResourceId
+      RestApiId: !Ref HotelApi
+      PathPart: clients
+
+  PostMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref HotelApi
+      ResourceId: !Ref ClientsResource
+      HttpMethod: POST
+      AuthorizationType: NONE
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${SaveLambda.Arn}/invocations
+
+  GetMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref HotelApi
+      ResourceId: !Ref ClientsResource
+      HttpMethod: GET
+      AuthorizationType: NONE
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${ReadLambda.Arn}/invocations
+
+  OptionsMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref HotelApi
+      ResourceId: !Ref ClientsResource
+      HttpMethod: OPTIONS
+      AuthorizationType: NONE
+      Integration:
+        Type: MOCK
+        IntegrationResponses:
+          - StatusCode: 200
+            ResponseParameters:
+              method.response.header.Access-Control-Allow-Headers: "'Content-Type'"
+              method.response.header.Access-Control-Allow-Methods: "'POST,GET,OPTIONS'"
+              method.response.header.Access-Control-Allow-Origin: "'*'"
+        RequestTemplates:
+          application/json: '{"statusCode": 200}'
+      MethodResponses:
+        - StatusCode: 200
+          ResponseParameters:
+            method.response.header.Access-Control-Allow-Headers: true
+            method.response.header.Access-Control-Allow-Methods: true
+            method.response.header.Access-Control-Allow-Origin: true
+
+  ApiDeployment:
+    Type: AWS::ApiGateway::Deployment
+    DependsOn: [PostMethod, GetMethod, OptionsMethod]
+    Properties:
+      RestApiId: !Ref HotelApi
+
+  ApiStage:
+    Type: AWS::ApiGateway::Stage
+    Properties:
+      StageName: prod
+      RestApiId: !Ref HotelApi
+      DeploymentId: !Ref ApiDeployment
+
+  PostPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref SaveLambda
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${HotelApi}/*/POST/clients
+
+  GetPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref ReadLambda
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${HotelApi}/*/GET/clients
+
+  WebsiteBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+
+  OriginAccessControl:
+    Type: AWS::CloudFront::OriginAccessControl
+    Properties:
+      OriginAccessControlConfig:
+        Name: !Sub OAC-${ProjectName}
+        OriginAccessControlOriginType: s3
+        SigningBehavior: always
+        SigningProtocol: sigv4
+
+  CloudFrontDist:
+    Type: AWS::CloudFront::Distribution
+    Properties:
+      DistributionConfig:
+        Enabled: true
+        DefaultRootObject: index.html
+        # For custom domain buabengauthentichotel.com - uncomment when you have ACM cert
+        # Aliases: [buabengauthentichotel.com, www.buabengauthentichotel.com]
+        # ViewerCertificate:
+        #   AcmCertificateArn: arn:aws:acm:us-east-1:ACCOUNT_ID:certificate/CERT_ID
+        #   SslSupportMethod: sni-only
+        #   MinimumProtocolVersion: TLSv1.2_2021
+        Origins:
+          - Id: S3Origin
+            DomainName: !GetAtt WebsiteBucket.RegionalDomainName
+            OriginAccessControlId: !GetAtt OriginAccessControl.Id
+            S3OriginConfig:
+              OriginAccessIdentity: ''
+        DefaultCacheBehavior:
+          TargetOriginId: S3Origin
+          ViewerProtocolPolicy: redirect-to-https
+          AllowedMethods: [GET, HEAD]
+          CachedMethods: [GET, HEAD]
+          CachePolicyId: 658327ea-f89d-4fab-a63d-7e88639e58f6
+
+  WebsiteBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    DependsOn: CloudFrontDist
+    Properties:
+      Bucket: !Ref WebsiteBucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: cloudfront.amazonaws.com
+            Action: s3:GetObject
+            Resource: !Sub ${WebsiteBucket.Arn}/*
+            Condition:
+              StringEquals:
+                AWS:SourceArn: !Sub arn:aws:cloudfront::${AWS::AccountId}:distribution/${CloudFrontDist}
+
+Outputs:
+  ApiUrl:
+    Value: !Sub https://${HotelApi}.execute-api.${AWS::Region}.amazonaws.com/prod/clients
+    Description: API endpoint - use in frontend
+  WebsiteBucketName:
+    Value: !Ref WebsiteBucket
+    Description: S3 bucket for frontend upload
+  CloudFrontUrl:
+    Value: !Sub https://${CloudFrontDist.DomainName}
+    Description: CloudFront default URL
+  CustomDomainUrl:
+    Value: https://buabengauthentichotel.com
+    Description: Live custom domain via Route53

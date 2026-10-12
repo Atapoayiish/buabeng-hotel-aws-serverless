@@ -1,0 +1,76 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Buabeng Admin</title>
+<style>
+body{font-family:Arial;background:#f4f4f4;padding:20px}
+#loginBox{background:white;padding:30px;border-radius:10px;max-width:400px;margin:50px auto;text-align:center;box-shadow:0 4px 10px rgba(0,0,0,0.1)}
+input{width:90%;padding:12px;margin:10px 0;border:1px solid #ccc;border-radius:5px}
+button{padding:12px 25px;background:#111;color:white;border:none;border-radius:5px;cursor:pointer;width:95%}
+#dataBox{display:none;background:white;padding:20px;border-radius:10px}
+table{width:100%;border-collapse:collapse;margin-top:15px}
+th,td{border:1px solid #ddd;padding:8px;font-size:13px;text-align:left}
+th{background:#111;color:white}
+.warning{background:#fff3cd;padding:10px;border-radius:5px;margin-bottom:15px;font-size:12px}
+</style>
+</head>
+<body>
+
+<div id="loginBox">
+<h2>Admin Login</h2>
+<div class="warning">⚠️ Demo only: Client-side auth is not secure for production. Use Cognito / IAM for real projects.</div>
+<input type="password" id="pw" placeholder="Enter password">
+<br>
+<button onclick="go()">LOGIN</button>
+<p id="msg" style="color:red"></p>
+</div>
+
+<div id="dataBox">
+<h2>DATABASE OPENED ✅ <span id="total"></span></h2>
+<button onclick="loadData()">Refresh</button>
+<table id="tbl"><tr><th>Name</th><th>Phone</th><th>Service</th><th>Date</th><th>Created</th></tr></table>
+</div>
+
+<script>
+// SAFE FOR GITHUB - Replace these values locally
+const API_ENDPOINT = "REPLACE_WITH_YOUR_API_ENDPOINT";
+const API = API_ENDPOINT;
+
+// IMPORTANT: Don't hardcode password in frontend for production
+// For GitHub demo, use environment variable or prompt
+const ADMIN_PASSWORD = "REPLACE_WITH_YOUR_ADMIN_PASSWORD";
+
+function go(){
+  const v = document.getElementById('pw').value;
+  if(v === ADMIN_PASSWORD){
+    alert("Password correct! Opening database...");
+    document.getElementById('loginBox').style.display='none';
+    document.getElementById('dataBox').style.display='block';
+    loadData();
+  } else {
+    document.getElementById('msg').innerText = "Wrong password!";
+  }
+}
+async function loadData(){
+  try{
+    const r = await fetch(API);
+    const data = await r.json();
+    document.getElementById('total').innerText = "Total: " + data.length;
+    const tbl = document.getElementById('tbl');
+    tbl.innerHTML = '<tr><th>Name</th><th>Phone</th><th>Service</th><th>Date</th><th>Created</th></tr>';
+    data.reverse().forEach(c=>{
+      // Support both old and new field names
+      const roomType = c.roomType || c.service || c.request || '';
+      const date = c.date || '';
+      const created = (c.createdAt || '').slice(0,10);
+      tbl.innerHTML += `<tr><td>${c.name||''}</td><td>${c.phone||''}</td><td>${roomType}</td><td>${date}</td><td>${created}</td></tr>`;
+    });
+  }catch(e){
+    alert("API Error: "+e);
+  }
+}
+</script>
+</body>
+</html>
